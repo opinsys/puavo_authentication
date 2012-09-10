@@ -1,16 +1,13 @@
-<% form_tag sessions_path do %>
-<table>
-  <tr>
-    <td><%= label :user, :uid %></td>
-    <td><%= text_field :user, :uid %></td>
-  </tr>
-  <tr>
-  <td><%= label :user, :password %></td>
-  <td><%= password_field :user, :password %></td>
-  </tr>
-  <tr>
-    <td></td>
-    <td><%= submit_tag t('link.login') %></td>
-  </tr>
-</table>
+<% form_tag (sessions_path, {:class => "form_inline"}) do %>
+<span class="display_block">
+<%= label :user, :uid %>
+<%= text_field :user, :uid %>
+</span>
+<span class="display_block">
+<%= label :user, :password %>
+<%= password_field :user, :password %>
+</span>
+<div class="submit_button_login">
+  <%= submit_tag t('link.login') %>
+</div>
 <% end %>
