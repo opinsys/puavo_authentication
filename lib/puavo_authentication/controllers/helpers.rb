@@ -7,7 +7,12 @@ module PuavoAuthentication
             return @current_user
           else
             begin
-              return @current_user = User.find(session[:dn]) # REST/OAuth?
+              if session[:dn].to_s.match(/ou=People/)
+                return @current_user = User.find(session[:dn])
+              else
+                # If user is ExternalService return nil
+                logger.info "current_user is ExternalServier user:  #{session[:dn]}"
+              end
             rescue
               logger.info "Session's user not found! User is removed from ldap server."
               logger.info "session[:dn]: #{session[:dn]}"
