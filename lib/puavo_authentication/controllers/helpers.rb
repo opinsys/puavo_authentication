@@ -96,6 +96,13 @@ module PuavoAuthentication
       def set_authorization_user
         Puavo::Authorization.current_user = current_user if current_user
       end
+
+      def remove_authorization_user
+        if Puavo::Authorization.current_user
+          logger.debug "Remove authorization user: " + Puavo::Authorization.current_user.dn.inspect
+        end
+        Puavo::Authorization.current_user = nil
+      end
     end
   end
 end
