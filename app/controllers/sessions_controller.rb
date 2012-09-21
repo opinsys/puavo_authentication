@@ -19,6 +19,13 @@ class SessionsController < ApplicationController
     end
   end
 
+  def auth
+
+    respond_to do |format|
+      format.json { render :json => true.to_json }
+    end
+  end
+
   def show
     @user = User.find(session[:dn])
     respond_to do |format|
