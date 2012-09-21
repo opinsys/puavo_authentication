@@ -1,6 +1,6 @@
 class SessionsController < ApplicationController
   layout 'sessions'
-  before_filter :login_required, :only => [:destroy, :show]
+  skip_before_filter :login_required, :only => [:new, :create]
 
   def new
   end
