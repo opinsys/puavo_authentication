@@ -1,7 +1,7 @@
-<% form_tag (sessions_path, {:class => "form_inline"}) do %>
+<% form_tag (sessions_path, {:class => "form_inline", :autocapitalize =>"off"}) do %>
 <span class="display_block">
 <%= label :user, :uid %>
-<%= text_field :user, :uid, :autocapitalize =>"off" %>
+<%= text_field :user, :uid %>
 </span>
 <span class="display_block">
 <%= label :user, :password %>
