@@ -1,26 +1,27 @@
 class SessionsController < ApplicationController
   layout 'sessions'
-  before_filter :login_required, :only => [:destroy, :show]
+  skip_before_filter :require_puavo_authorization, :only => [:new, :create]
+  skip_before_filter :require_login, :only => [:new, :create]
 
   def new
   end
 
   def create
-    if user_dn = User.authenticate( params[:user][:uid], params[:user][:password] ) # REST/OAuth?
-      flash[:notice] = t('flash.session.login_successful')
-      session[:dn] = user_dn
-      session[:password_plaintext] = params[:user][:password]
+    session[:uid] = params[:user][:uid]
+    session[:password_plaintext] = params[:user][:password]
+    session[:login_flash] = t('flash.session.login_successful')
+    redirect_back_or_default root_path
+  end
 
-      #redirect_back_or_default schools_url
-      redirect_back_or_default root_path
-    else
-      flash[:notice] = t('flash.session.failed')
-      render :action => :new
+  def auth
+    
+    respond_to do |format|
+      format.json { render :json => true.to_json }
     end
   end
 
   def show
-    @user = User.find(session[:dn])
+    @user = current_user
     respond_to do |format|
       format.json  { render :json => @user.to_json(:methods => :managed_schools) }
     end
@@ -29,7 +30,7 @@ class SessionsController < ApplicationController
   def destroy
     # Remove dn and plaintext password values from session
     session.delete :password_plaintext
-    session.delete :dn
+    session.delete :uid
     flash[:notice] = t('flash.session.logout_successful')
     redirect_to login_path
   end

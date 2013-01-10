@@ -1,52 +1,178 @@
 module PuavoAuthentication
   module Controllers
     module Helpers
+
+      attr_accessor :authentication
+
       def current_user
-        unless session[:dn].nil?
-          unless @current_user.nil?
-            return @current_user
-          else
-            begin
-              return @current_user = User.find(session[:dn]) # REST/OAuth?
-            rescue
-              logger.info "Session's user not found! User is removed from ldap server."
-              logger.info "session[:dn]: #{session[:dn]}"
-              # Delete ldap connection informations from session.
-              session.delete :password_plaintext
-              session.delete :dn
-            end
-          end
+
+        if @authentication.nil?
+          raise "Cannot call 'current_user' before 'setup_authentication'"
         end
-        return nil
+
+        @authentication.current_user
+
       end
 
-      def login_required
-        case request.format
-        when !current_user && Mime::JSON
-          logger.debug "Using HTTP basic authentication"
-          password = ""
+      def current_organisation
+        if @authentication.nil?
+          raise "Cannot call 'current_organisation' before 'setup_authentication'"
+        end
 
-          user_dn = authenticate_with_http_basic do |login, password|
-            if login.match(/^service\//)
-              ExternalService.authenticate(login.match(/^service\/(.*)/)[1], password)
-            else
-              User.authenticate(login, password)
+        @authentication.current_organisation
+
+      end
+
+
+      # Returns user dn/uid and password for some available login mean
+      def acquire_credentials
+
+        # OAuth Access Token
+        if auth_header = request.headers["HTTP_AUTHORIZATION"]
+          type, data = auth_header.split
+          if type.downcase == "bearer"
+            return AccessToken.decrypt_token data
+          end
+        end
+
+        # Basic Auth
+        #  * OAuth Client Server ID & Secrect
+        #  * External Service UID & password
+        #  * User UID & password
+        #  * Server dn & password
+        authenticate_with_http_basic do |username, password|
+          logger.debug "Using basic authentication with #{ username }"
+
+          # FIXME: move to Puavo::Authentication class (configure_ldap_connection)
+          if match = username.match(/^oauth_client_id\/(.*)\/(.*)$/)
+
+            org_key = match[1]
+            oauth_client_id = match[2]
+
+            @authentication.configure_ldap_connection(
+              :organisation_key => org_key
+            )
+
+            oauth_client_server = OauthClient.find(:first,
+              :attribute => "puavoOAuthClientId",
+              :value => oauth_client_id)
+
+            return {
+              :dn => oauth_client_server.dn,
+              :organisation_key => org_key,
+              :password => password,
+              :scope => oauth_client_server.puavoOAuthScope
+            }
+
+          end
+
+          # Authenticate with server's distinguished name and password
+          if !username.to_s.empty? && (server_dn = ActiveLdap::DistinguishedName.parse(username) rescue nil)
+            if server_dn.parent.rdns.first["ou"] == "Servers"
+              return {
+                :dn => server_dn,
+                :organisation_key => organisation_key_from_host,
+                :password => password,
+              }
             end
           end
-          if user_dn
-            session[:dn] = user_dn
-            session[:password_plaintext] = password
-            logger.debug "Logged in with http basic authentication"
-          else
-            request_http_basic_authentication
-          end
+
+          return {
+            :uid => username,
+            :organisation_key => organisation_key_from_host,
+            :password => password
+          }
+        end
+
+        # Puavo Session (User UID & password)
+        if uid = session[:uid]
+          logger.debug "Using session authentication with #{ uid }"
+          return {
+            :uid => uid,
+            :organisation_key => organisation_key_from_host,
+            :password => session[:password_plaintext]
+          }
+        end
+
+      end
+
+      # Before filter
+      # Setup authentication object with default credentials from
+      # config/ldap.yml
+      def setup_authentication
+
+        @authentication = Puavo::Authentication.new
+
+      end
+
+
+      def perform_login(credentials)
+
+        if credentials.nil?
+          raise Puavo::AuthenticationFailed, "No credentials supplied"
+        end
+
+        # Configure ActiveLdap to use the credentials
+        @authentication.configure_ldap_connection credentials
+
+        # Authenticate above credentials
+        @authentication.authenticate
+
+        # Set locale from user's organisation
+        I18n.locale = current_organisation.locale
+
+        return true
+      end
+
+      # Before filter
+      # Require user login credentials
+      def require_login
+
+        begin
+          perform_login(acquire_credentials)
+        rescue Puavo::AuthenticationError => e
+          logger.info "Login failed for: #{ e }"
+          show_authentication_error e.code, t('flash.session.failed')
+          return false
+        end
+
+        if session[:login_flash]
+          flash[:notice] = session[:login_flash]
+          session.delete :login_flash
+        end
+
+        return true
+      end
+
+      # Before filter
+      # Require Puavo access rights
+      def require_puavo_authorization
+
+        # Unauthorized always when not authenticated
+        return false unless @authentication
+
+        begin
+          @authentication.authorize
+        rescue Puavo::AuthorizationFailed => e
+          logger.info "Authorization  failed: #{ e }"
+          show_authentication_error "unauthorized", t('flash.session.failed')
+          return false
+        end
+      end
+
+      def show_authentication_error(code, message)
+        session.delete :password_plaintext
+        session.delete :uid
+        if request.format == Mime::JSON
+          render(:json => {
+            :error => code,
+            :message => message,
+          }.to_json,
+          :status => 401)
         else
-          unless current_user
-            store_location
-            flash[:notice] = t('must_be_logged_in')
-            redirect_to login_path
-            return false
-          end
+          store_location
+          flash[:notice] = message
+          redirect_to login_path
         end
       end
 
@@ -59,43 +185,44 @@ module PuavoAuthentication
         session[:return_to] = nil
       end
 
-      def ldap_setup_connection
-        host = ""
-        base = ""
-        default_ldap_configuration = ActiveLdap::Base.ensure_configuration
-        unless session[:organisation].nil?
-          host = session[:organisation].ldap_host
-          base = session[:organisation].ldap_base
+      def organisation_key_from_host(host=nil)
+        organisation_key = Puavo::Organisation.key_by_host(request.host)
+        unless organisation_key
+          organisation_key = Puavo::Organisation.key_by_host("*")
         end
-        if session[:dn]
-          dn = session[:dn]
-          password = session[:password_plaintext]
-          logger.debug "Using user's credentials for LDAP connection"
-        else
-          logger.debug "Using Puavo credentials for LDAP connection"
-          dn =  default_ldap_configuration["bind_dn"]
-          password = default_ldap_configuration["password"]
+        return organisation_key
+      end
+
+
+      def set_organisation_to_session
+        session[:organisation] = current_organisation if current_organisation
+      end
+
+      def set_initial_locale
+        # Default to English
+        I18n.locale = "en"
+
+        # TODO: set from user agent
+
+        # Set from hostname if it is a known organisation
+        if organisation = Puavo::Organisation.find_by_host(request.host)
+          I18n.locale = organisation.locale
         end
-        logger.debug "Set host, bind_dn, base and password by user:"
-        logger.debug "host: #{host}"
-        logger.debug "base: #{base}"
-        logger.debug "dn: #{dn}"
-        LdapBase.ldap_setup_connection(host, base, dn, password)
+
       end
 
       def remove_ldap_connection
-        ActiveLdap::Base.active_connections.keys.each do |connection_name|
-          ActiveLdap::Base.remove_connection(connection_name)
+        Puavo::Authentication.remove_connection
+      end
+
+      def theme
+        if current_organisation
+          theme = current_organisation.value_by_key('theme')
         end
+
+        return theme || "breathe"
       end
 
-      def organisation_owner?
-        Puavo::Authorization.organisation_owner?
-      end
-
-      def set_authorization_user
-        Puavo::Authorization.current_user = current_user if current_user
-      end
     end
   end
 end
